@@ -1,1 +1,1 @@
-# LARS-app
+# lars-risk
