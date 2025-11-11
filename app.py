@@ -75,4 +75,254 @@ except Exception as e:
         st.write("当前目录文件列表：", os.listdir('.'))
 st.divider()
 
-# 以下代码与原代码一致，省略...
+# -------------------------- 预测核心逻辑 --------------------------
+if model_loaded:
+    # 显示"开始预测"按钮
+    if not st.session_state.show_form and not st.session_state.has_predicted:
+        if st.button("📊 开始预测", type="primary", use_container_width=True):
+            st.session_state.show_form = True
+
+    # 特征输入表单
+    if st.session_state.show_form:
+        with st.form("prediction_form", clear_on_submit=False):
+            st.markdown("### 请输入以下8项特征信息")
+            
+            # 1. 年龄
+            age = st.number_input("年龄（岁）", min_value=0.0, max_value=120.0, value=50.0, step=1.0, format="%.0f", key="age")
+            # 2. BMI
+            BMI = st.number_input("BMI（体重/身高² kg/m²）", min_value=10.0, max_value=50.0, value=22.0, step=0.1, format="%.1f", key="bmi")
+            # 3. 肿瘤距肛门距离
+            tumor_dist = st.number_input("肿瘤距肛门距离（cm）", min_value=0.0, max_value=50.0, value=5.0, step=0.1, format="%.1f", key="tumor_dist")
+            # 4. 手术时间
+            surg_time = st.number_input("手术时间（分钟）", min_value=0.0, max_value=600.0, value=180.0, step=1.0, format="%.0f", key="surg_time")
+            # 5. 术后首次排气天数
+            exhaust = st.number_input("术后首次排气天数（打屁）", min_value=0.0, max_value=30.0, value=2.0, step=0.5, format="%.1f", key="exhaust")
+            # 6. 肿瘤大小
+            tumor_size = st.number_input("肿瘤大小（长×宽 cm²）", min_value=0.1, max_value=50.0, value=3.0, step=0.1, format="%.1f", key="tumor_size")
+            # 7. TNM分期（病理→临床换算）
+            st.markdown("📌 **TNM分期换算说明**（模型使用临床分期，可从病历病理分期查询对应值）：")
+            tnm_conversion = pd.DataFrame({
+                "临床分期（模型输入值）": ["1期（输入1）", "2期（输入2）", "3期（输入3）", "4期（输入4）"],
+                "对应病理TNM分期（病历报告）": [
+                    "T1-2N0M0（肿瘤侵犯黏膜/肌层，无淋巴结及远处转移）",
+                    "T3-4N0M0（肿瘤侵犯浆膜/邻近器官，无淋巴结及远处转移）",
+                    "任何T，N1-2M0（任何肿瘤深度，有区域淋巴结转移，无远处转移）",
+                    "任何T，任何N，M1（任何肿瘤深度及淋巴结状态，有远处转移）"
+                ]
+            })
+            st.dataframe(tnm_conversion, use_container_width=True)
+            
+            if user_type == "👨‍⚕️ 医护工作者":
+                TNM = st.number_input("TNM临床分期", 
+                                     min_value=1.0, max_value=4.0, value=2.0, step=1.0, format="%.0f", key="tnm")
+            else:
+                tnm_options = {"I期（对应病理T1-2N0M0）":1.0, 
+                               "II期（对应病理T3-4N0M0）":2.0, 
+                               "III期（对应病理任何T，N1-2M0）":3.0, 
+                               "IV期（对应病理任何T，任何N，M1）":4.0}
+                tnm_selected = st.selectbox("TNM临床分期（可对照病历病理分期选择）", list(tnm_options.keys()), key="tnm_select")
+                TNM = tnm_options[tnm_selected]
+            
+            # 8. 新辅助治疗
+            if user_type == "👨‍⚕️ 医护工作者":
+                neoadjuvant = st.number_input("是否新辅助治疗（0=否，1=是）", min_value=0.0, max_value=1.0, value=0.0, step=1.0, format="%.0f", key="neo")
+            else:
+                neo_options = {"否":0.0, "是":1.0}
+                neo_selected = st.selectbox("是否接受术前辅助治疗（放疗/化疗）", list(neo_options.keys()), key="neo_select")
+                neoadjuvant = neo_options[neo_selected]
+            
+            # 提交按钮
+            submit_btn = st.form_submit_button("🔍 提交并预测", type="primary")
+        
+        # 提交后执行预测
+        if submit_btn:
+            try:
+                input_data = pd.DataFrame([[
+                    age, BMI, tumor_dist, surg_time, exhaust, tumor_size, TNM, neoadjuvant
+                ]], columns=['age', 'BMI', 'tumor_dist', 'surg_time', 'exhaust', 'tumor_size', 'TNM', 'neoadjuvant'])
+                
+                if input_data.shape[1] != model.n_features_in_:
+                    st.error(f"❌ 输入特征数量不匹配！模型需要{model.n_features_in_}个特征，当前输入{input_data.shape[1]}个")
+                else:
+                    with st.spinner("正在计算风险结果..."):
+                        prediction = model.predict(input_data)[0]
+                        time.sleep(1)
+                    
+                    st.session_state.pred_result = prediction
+                    st.session_state.input_data = input_data
+                    st.session_state.has_predicted = True
+                    st.session_state.show_form = False
+            
+            except Exception as e:
+                st.error(f"预测过程出错：{str(e)}")
+                st.warning("请检查输入数值是否合理，或模型是否正常加载")
+    
+    # 显示预测结果
+    if st.session_state.has_predicted and st.session_state.pred_result is not None:
+        st.success("### 预测结果已生成")
+        prediction = st.session_state.pred_result
+        input_data = st.session_state.input_data
+        
+        if prediction == 1:
+            st.error("⚠️ 预测结论：存在LARS风险")
+            if user_type == "👨‍⚕️ 医护工作者":
+                st.markdown("""
+                **临床建议**：
+                1. 加强术后随访，重点监测肠道功能（排便频率、失禁情况）；
+                2. 考虑康复干预（盆底肌训练、生物反馈治疗）；
+                3. 必要时组织多学科会诊（外科、康复科、营养科）；
+                4. 制定个性化饮食与排便管理方案。
+                """)
+            else:
+                st.markdown("""
+                **康复建议**：
+                1. 您可能存在术后肠道功能异常的风险；
+                2. 请及时与主治医生沟通，了解更多关于LARS管理措施；
+                3. 遵循医嘱进行康复训练（如缩肛运动），改善排便控制；
+                4. 饮食调整：少食多餐，避免高纤维、油腻食物，减少肠道刺激；
+                5. 定期复查，密切关注排便异常变化；
+                6. 保持积极心态：LARS症状多在术后6-12个月逐渐缓解，规范管理可显著改善生活质量。
+                """)
+        else:
+            st.success("✅ 预测结论：无明显LARS风险")
+            if user_type == "👨‍⚕️ 医护工作者":
+                st.markdown("""
+                **临床建议**：
+                1. 按常规流程进行术后管理，定期随访；
+                2. 向患者普及LARS预防知识（饮食、运动指导）；
+                3. 鼓励患者保持健康生活方式，降低潜在风险。
+                """)
+            else:
+                st.markdown("""
+                **健康建议**：
+                1. 当前评估显示您的风险较低；
+                2. 继续保持术后康复习惯，避免过度劳累；
+                3. 遵医嘱进行康复，保持健康的生活习惯；
+                4. 定期复查，关注身体状况；
+                5. 即使风险较低，仍建议您了解关于直肠术后lARS的相关信息；
+                6. 若出现排便异常（如频繁腹泻、失禁），及时就医咨询。
+                """)
+        
+        # 输入信息核对
+        st.markdown("### 输入信息核对")
+        summary_data = {
+            "特征名称": ["年龄", "BMI（体重/身高² kg/m²）", "肿瘤距肛门距离", "手术时间", "术后首次排气天数（打屁）", "肿瘤大小（长×宽 cm²）", "TNM临床分期", "新辅助治疗"],
+            "您输入的值": [
+                f"{input_data.iloc[0]['age']:.0f}岁",
+                f"{input_data.iloc[0]['BMI']:.1f}kg/m²",
+                f"{input_data.iloc[0]['tumor_dist']:.1f}cm",
+                f"{input_data.iloc[0]['surg_time']:.0f}分钟",
+                f"{input_data.iloc[0]['exhaust']:.1f}天",
+                f"{input_data.iloc[0]['tumor_size']:.1f}cm²",
+                f"{int(input_data.iloc[0]['TNM'])}期",
+                "是" if input_data.iloc[0]['neoadjuvant'] == 1.0 else "否"
+            ]
+        }
+        st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+        
+        # 重新预测按钮
+        if st.button("🔄 重新预测", use_container_width=True):
+            st.session_state.show_form = False
+            st.session_state.has_predicted = False
+            st.session_state.pred_result = None
+            st.session_state.input_data = None
+
+# -------------------------- 使用说明 --------------------------
+st.divider()
+with st.expander("📋 使用说明", expanded=False):
+    st.markdown("""
+    1. 选择您的身份（医护工作者/患者家属）；
+    2. 查看模型加载状态（显示“加载成功”方可预测）；
+    3. 点击「开始预测」按钮，填写8项特征信息（TNM分期请对照病历的病理分期，参考表单内的换算表）；
+    4. 点击「提交并预测」，等待1-2秒后查看结果；
+    5. 如需重新预测，点击「重新预测」按钮即可。
+    """)
+
+# -------------------------- 新增：了解更多关于LARS（分医护/患者端） --------------------------
+st.divider()
+with st.expander("📚 了解更多关于LARS", expanded=False):
+    # 身份切换按钮（独立于主身份选择，方便交叉查看）
+    info_user_type = st.radio(
+        "查看视角",
+        ["👨‍⚕️ 医护专业视角", "👨‍👩‍👧‍👦 患者家属视角"],
+        horizontal=True,
+        key="info_user_type"
+    )
+    
+    # 医护专业视角
+    if info_user_type == "👨‍⚕️ 医护专业视角":
+        st.markdown("### 一、定义")
+        st.markdown("""
+        LARS是直肠癌保肛术后发生的肠道功能障碍综合征，核心定义为：
+        - 术后出现≥1种排便异常症状（如失禁、便急、排空困难等）；
+        - 症状导致≥1种生活质量受损结局（如社交受限、心理影响等）；
+        - 发生率高达60%~90%，重度LARS发生率约41%，部分患者症状持续数年。
+        """)
+        
+        st.markdown("### 二、临床表现（3种表型）")
+        st.markdown("""
+        1. 储便障碍型：以大便失禁、排便急迫感、排便频次增加为核心；
+        2. 排空障碍型：表现为排便费力、排便不尽感、需手助排便；
+        3. 混合障碍型：兼具储便与排空障碍症状，临床最常见。
+        """)
+        
+        st.markdown("### 三、发生机制")
+        st.markdown("""
+        1. 新直肠功能障碍：储便容量减少、顺应性降低，肠道动力异常；
+        2. 神经损伤：手术损伤盆腔自主神经（上腹下神经丛、盆丛等），影响排便反射；
+        3. 肛门括约肌功能受损：TME手术或ISR手术导致括约肌结构/功能损伤；
+        4. 放疗相关损伤：新辅助放疗诱导直肠壁纤维化、黏膜感觉障碍；
+        5. 吻合口并发症：吻合口漏引发盆腔炎症，进一步加重功能障碍。
+        """)
+        
+        st.markdown("### 四、推荐管理策略（阶梯式治疗）")
+        st.markdown("""
+        1. 一线治疗：饮食调整+药物治疗（止泻药、5-HT3受体拮抗剂等）+盆底康复（生物反馈、凯格尔训练）；
+        2. 二线治疗：经肛灌洗（TAI）、经皮胫神经刺激（PTNS）、针灸；
+        3. 三线治疗：骶神经调节（SNM）、顺行结肠灌洗（ACE）；
+        4. 终末治疗：永久性肠造口（仅用于重度难治性病例）；
+        5. 全程管理：多学科团队（外科、康复科、营养科）协作，动态调整方案。
+        """)
+    
+    # 患者家属视角
+    else:
+        st.markdown("### 一、什么是LARS？")
+        st.markdown("""
+        LARS是“低位前切除综合征”的简称，简单说就是直肠保肛手术后，肠道功能出现的一系列问题，比如排便不规律、控制不住排便等。
+        - 这是术后常见情况，很多患者都会出现，不是手术失败；
+        - 症状通常在术后6-12个月逐渐好转，少数人可能持续久一些；
+        - 主要影响生活质量，通过规范管理大多能显著改善。
+        """)
+        
+        st.markdown("### 二、可能会出现哪些表现？")
+        st.markdown("""
+        1. 控制不住排便：比如放屁时漏便、稀便失禁，需要经常用护垫；
+        2. 排便太急：突然想排便，来不及去厕所；
+        3. 排便频繁：一天要排好几次，每次量不多；
+        4. 排便费力：蹲很久排不出，或总觉得没排干净；
+        5. 混合情况：又有排便急，又有排便费力，交替出现。
+        """)
+        
+        st.markdown("### 三、为什么会出现这些问题？")
+        st.markdown("""
+        1. 手术切除了部分直肠，新的肠道储存粪便的“容量”变小了，容易有便意；
+        2. 手术中可能影响了控制排便的神经，导致排便反射不灵敏；
+        3. 肛门周围的肌肉功能需要时间恢复，术后早期控制能力会弱一些；
+        4. 术前放疗可能让肠道黏膜变得敏感，容易出现腹泻、便急。
+        """)
+        
+        st.markdown("### 四、怎么管理和改善？")
+        st.markdown("""
+        1. 饮食调整：少食多餐，避免辛辣、油腻、生冷食物，多吃易消化的食物和可溶性膳食纤维；
+        2. 生活习惯：养成定时排便的习惯（比如早餐后），睡前2小时别吃东西；
+        3. 康复训练：按医生指导做凯格尔运动（缩肛训练），增强肛门肌肉力量；
+        4. 及时就医：如果症状严重（比如频繁失禁），及时告诉医生，可通过药物、康复治疗或其他医疗手段改善；
+        5. 心态调整：别太焦虑，LARS是术后正常恢复过程，积极配合医生管理就能慢慢好转。
+        """)
+
+# -------------------------- 底部声明 --------------------------
+st.divider()
+st.markdown("""
+⚠️ **声明**：本工具仅供临床辅助决策及患者科普参考，不能替代专业医生的诊断与治疗方案。
+""", unsafe_allow_html=False)
+
